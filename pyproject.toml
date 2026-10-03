@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evalharness"
+version = "0.1.0"
+description = "A small, dependency-free evaluation harness for LLM systems: metrics, LLM-as-judge, cost/latency tracking and regression gates."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Pragathi Gopal" }]
+dependencies = []
+
+[project.scripts]
+evalharness = "evalharness.cli:main"
+
+[tool.setuptools]
+packages = ["evalharness"]

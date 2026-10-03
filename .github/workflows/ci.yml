@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Offline smoke eval (mock provider)
+        run: |
+          python -m evalharness run --dataset data/sample.jsonl --provider mock \
+            --mock-accuracy 1.0 --metrics exact_match --out runs/smoke.json
+
+  # Real-model eval with a regression gate. Runs only when an API key secret exists.
+  model-eval:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'pull_request'
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run eval
+        if: env.ANTHROPIC_API_KEY != ''
+        run: |
+          ARGS="--dataset data/sample.jsonl --provider anthropic --model ${{ vars.EVAL_MODEL || 'claude-haiku-4-5' }} \
+                --metrics exact_match --judge-model ${{ vars.JUDGE_MODEL || 'claude-haiku-4-5' }} \
+                --temperature 0 --out runs/pr.json --report reports/pr.md --min-pass-rate 0.6"
+          if [ -f baselines/main.json ]; then
+            ARGS="$ARGS --baseline baselines/main.json --max-drop 0.05 --fail-on-regression"
+          fi
+          python -m evalharness run $ARGS
+      - name: Add report to job summary
+        if: always() && env.ANTHROPIC_API_KEY != ''
+        run: test -f reports/pr.md && cat reports/pr.md >> "$GITHUB_STEP_SUMMARY" || true
