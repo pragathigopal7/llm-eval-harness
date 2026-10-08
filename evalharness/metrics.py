@@ -16,7 +16,7 @@ from typing import Callable, Dict, List, Optional
 from .models import Example
 
 _ARTICLES = re.compile(r"\b(a|an|the)\b")
-_NUMBER = re.compile(r"-?\d[\d,]*\.?\d*")
+_NUMBER = re.compile(r"-?(?:\d[\d,]*\.?\d*|\.\d+)")
 _PUNCT = str.maketrans("", "", string.punctuation)
 
 
