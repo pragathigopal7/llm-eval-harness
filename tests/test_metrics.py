@@ -40,6 +40,11 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(numeric_match("72.0 km/h", "72", ex()), 1.0)
         self.assertEqual(numeric_match("no numbers", "3", ex()), 0.0)
 
+    def test_numeric_match_leading_decimal(self):
+        self.assertEqual(numeric_match("The probability is .5", "0.5", ex()), 1.0)
+        self.assertEqual(numeric_match("Slope: -.25", "-0.25", ex()), 1.0)
+        self.assertEqual(numeric_match("Done.", "0", ex()), 0.0)
+
     def test_regex_match_prefers_metadata_pattern(self):
         self.assertEqual(regex_match("date: 2025-01-01", "zzz", ex(pattern=r"\d{4}-\d{2}-\d{2}")), 1.0)
         self.assertEqual(regex_match("hello", "HEL", ex()), 1.0)
