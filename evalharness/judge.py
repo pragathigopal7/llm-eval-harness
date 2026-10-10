@@ -41,7 +41,9 @@ Think about the response against the rubric, then reply with exactly this JSON:
 {{"reasoning": "<one or two sentences>", "score": <integer 1-5>}}"""
 
 _JSON_OBJ = re.compile(r"\{.*\}", re.DOTALL)
-_SCORE = re.compile(r'"?score"?\s*[:=]\s*([1-5])')
+# The lookahead rejects out-of-range or fractional scores ("10", "4.5") instead of
+# reading their first digit as a valid 1-5 score.
+_SCORE = re.compile(r'"?score"?\s*[:=]\s*([1-5])(?![\d.])', re.IGNORECASE)
 
 
 def parse_judgment(text: str) -> Tuple[Optional[int], str]:

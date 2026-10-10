@@ -117,6 +117,15 @@ class TestJudge(unittest.TestCase):
         self.assertIsNone(parse_judgment("no idea")[0])
         self.assertIsNone(parse_judgment('{"score": 9}')[0])
 
+    def test_parse_rejects_out_of_range_and_fractional_scores(self):
+        self.assertIsNone(parse_judgment('{"reasoning": "x", "score": 10}')[0])
+        self.assertIsNone(parse_judgment("score: 4.5")[0])
+        self.assertIsNone(parse_judgment("score: 15")[0])
+
+    def test_parse_fallback_is_case_insensitive(self):
+        self.assertEqual(parse_judgment("Score: 4")[0], 4)
+        self.assertEqual(parse_judgment("SCORE = 5/5")[0], 5)
+
     def test_judge_scores_are_normalized(self):
         judge = LLMJudge(FixedProvider('{"reasoning": "fine", "score": 5}'))
         data = [Example(id="j", input="Explain X", expected="ref", metrics=["llm_judge"])]
