@@ -5,12 +5,18 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .judge import LLMJudge
 from .metrics import score_metrics
 from .models import CaseResult, Example, RunResult
 from .providers import Pricing
+
+# How a case sampled k times is judged as a whole.
+#   majority - passes when more than half of its samples pass (the default)
+#   all      - passes only when every sample passes (pass^k; strict, for CI)
+#   any      - passes when at least one sample passes (pass@k)
+PASS_POLICIES = ("majority", "all", "any")
 
 
 def _run_case(
@@ -80,6 +86,51 @@ def _run_case(
     )
 
 
+def _aggregate(samples: List[CaseResult], policy: str) -> CaseResult:
+    """Fold k sampled results for one example into a single CaseResult."""
+    if len(samples) == 1:
+        return samples[0]
+
+    k = len(samples)
+    passes = [s.passed for s in samples]
+    if policy == "all":
+        passed = all(passes)
+    elif policy == "any":
+        passed = any(passes)
+    else:
+        passed = sum(passes) * 2 > k
+
+    values: Dict[str, List[float]] = {}
+    for s in samples:
+        for name, value in s.scores.items():
+            values.setdefault(name, []).append(value)
+    scores = {name: sum(v) / len(v) for name, v in sorted(values.items())}
+
+    errored = [s for s in samples if s.error]
+    # The case only carries an error when no sample could be scored at all;
+    # occasional failed samples are counted in ``sample_errors`` instead.
+    error = errored[0].error if len(errored) == k else None
+
+    # Show a failing sample when the case failed, so the report explains why.
+    rep = next((s for s in samples if not s.passed), samples[0]) if not passed else samples[0]
+    return CaseResult(
+        example_id=rep.example_id,
+        output=rep.output,
+        scores=scores,
+        passed=passed and error is None,
+        latency_s=sum(s.latency_s for s in samples) / k,
+        input_tokens=sum(s.input_tokens for s in samples),
+        output_tokens=sum(s.output_tokens for s in samples),
+        cost_usd=sum(s.cost_usd for s in samples),
+        category=rep.category,
+        error=error,
+        judge_reasoning=rep.judge_reasoning,
+        sample_passes=passes,
+        sample_outputs=[s.output for s in samples],
+        sample_errors=len(errored),
+    )
+
+
 def run_eval(
     examples: List[Example],
     provider,
@@ -92,29 +143,45 @@ def run_eval(
     threshold: float = 0.5,
     concurrency: int = 4,
     progress: Optional[Callable[[int, int], None]] = None,
+    samples: int = 1,
+    pass_policy: str = "majority",
 ) -> RunResult:
     """Evaluate ``provider`` on ``examples``.
 
     ``metrics`` is the default metric list; an example's own ``metrics`` field
     overrides it. If ``judge`` is given it scores every example that doesn't
     override metrics, plus any example that lists ``llm_judge`` explicitly.
+
+    With ``samples > 1`` every example is run that many times, so you can see
+    how stable answers are (use a non-zero temperature for this to mean
+    anything). ``pass_policy`` decides whether the case as a whole passes:
+    ``majority`` (more than half), ``all`` (pass^k) or ``any`` (pass@k).
+    ``progress`` is called with (completed calls, total calls).
     """
+    if samples < 1:
+        raise ValueError("samples must be at least 1")
+    if pass_policy not in PASS_POLICIES:
+        raise ValueError(f"pass_policy must be one of {', '.join(PASS_POLICIES)}")
     metrics = list(metrics or ["exact_match"])
     pricing = pricing or Pricing()
     total = len(examples)
-    results: List[Optional[CaseResult]] = [None] * total
+    calls = total * samples
+    # results[i][j] is sample j of example i; indexing keeps order stable
+    # however the thread pool schedules the calls.
+    results: List[List[Optional[CaseResult]]] = [[None] * samples for _ in range(total)]
 
-    def work(index: int) -> None:
-        results[index] = _run_case(
+    def work(job: int) -> None:
+        index, sample = divmod(job, samples)
+        results[index][sample] = _run_case(
             examples[index], provider, metrics, judge, system, prompt_template, pricing, threshold
         )
 
     done = 0
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-        for _ in pool.map(work, range(total)):
+        for _ in pool.map(work, range(calls)):
             done += 1
             if progress:
-                progress(done, total)
+                progress(done, calls)
 
     return RunResult(
         name=name,
@@ -128,6 +195,8 @@ def run_eval(
             "prompt_template": prompt_template,
             "threshold": threshold,
             "num_examples": total,
+            "samples": samples,
+            "pass_policy": pass_policy,
         },
-        cases=[r for r in results if r is not None],
+        cases=[_aggregate([r for r in group if r is not None], pass_policy) for group in results],
     )

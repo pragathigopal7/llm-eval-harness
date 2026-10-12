@@ -43,6 +43,20 @@ class CaseResult:
     category: Optional[str] = None
     error: Optional[str] = None
     judge_reasoning: Optional[str] = None
+    # Set only when a case is sampled more than once (``samples > 1``). Then
+    # ``scores`` holds per-metric means across samples, tokens and cost are
+    # totals, latency is the mean, and ``output`` is a representative sample
+    # (the first failing one if the case failed, otherwise the first).
+    sample_passes: Optional[List[bool]] = None
+    sample_outputs: Optional[List[str]] = None
+    sample_errors: int = 0
+
+    @property
+    def pass_fraction(self) -> float:
+        """Share of samples that passed; 1.0 or 0.0 for a single-sample case."""
+        if self.sample_passes:
+            return sum(self.sample_passes) / len(self.sample_passes)
+        return 1.0 if self.passed else 0.0
 
 
 @dataclass
