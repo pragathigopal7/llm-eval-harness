@@ -22,6 +22,11 @@ jobs:
         run: |
           python -m evalharness run --dataset data/sample.jsonl --provider mock \
             --mock-accuracy 1.0 --metrics exact_match --out runs/smoke.json
+      - name: Offline sampled smoke eval (answer variance)
+        run: |
+          python -m evalharness run --dataset data/sample.jsonl --provider mock \
+            --mock-accuracy 0.75 --mock-stochastic --samples 3 --metrics exact_match \
+            --out runs/smoke-sampled.json
 
   # Real-model eval with a regression gate. Runs only when an API key secret exists.
   model-eval:

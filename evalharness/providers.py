@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import random
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -158,6 +159,11 @@ class MockProvider:
     Looks the prompt up in ``known`` (prompt -> reference answer) and returns it
     with probability ``accuracy``; otherwise returns a wrong answer. The
     decision is a deterministic hash of (seed, prompt), so runs are repeatable.
+
+    With ``stochastic=True`` the hash also includes how many times that prompt
+    has been asked, so repeated samples of one prompt can disagree, like a
+    model at non-zero temperature. Each prompt still sees the same sequence of
+    answers every run, so sampled results are repeatable too.
     """
 
     name = "mock"
@@ -169,15 +175,25 @@ class MockProvider:
         seed: int = 0,
         latency_s: float = 0.0,
         model: str = "mock",
+        stochastic: bool = False,
     ):
         self.known = known or {}
         self.accuracy = accuracy
         self.seed = seed
         self.latency_s = latency_s
         self.model = model
+        self.stochastic = stochastic
+        self._calls: Dict[str, int] = {}
+        self._lock = threading.Lock()
 
     def _is_correct(self, prompt: str) -> bool:
-        digest = hashlib.sha256(f"{self.seed}:{prompt}".encode("utf-8")).digest()
+        key = f"{self.seed}:{prompt}"
+        if self.stochastic:
+            with self._lock:
+                call = self._calls.get(prompt, 0)
+                self._calls[prompt] = call + 1
+            key = f"{key}:{call}"
+        digest = hashlib.sha256(key.encode("utf-8")).digest()
         return int.from_bytes(digest[:8], "big") / 2 ** 64 < self.accuracy
 
     def complete(self, prompt: str, system: Optional[str] = None) -> Completion:

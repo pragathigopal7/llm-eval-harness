@@ -17,7 +17,7 @@ from .judge import LLMJudge
 from .metrics import available_metrics
 from .providers import AnthropicProvider, MockProvider, OpenAICompatProvider, Pricing
 from .report import compare_runs, load_run, render_markdown, save_run, summarize
-from .runner import run_eval
+from .runner import PASS_POLICIES, run_eval
 
 
 def _build_provider(kind: str, model: Optional[str], args, examples=None, temperature=None):
@@ -36,12 +36,18 @@ def _build_provider(kind: str, model: Optional[str], args, examples=None, temper
         )
     if kind == "mock":
         known = {e.input: e.expected or "" for e in (examples or [])}
-        return MockProvider(known=known, accuracy=args.mock_accuracy, seed=args.seed, model=model or "mock")
+        return MockProvider(
+            known=known,
+            accuracy=args.mock_accuracy,
+            seed=args.seed,
+            model=model or "mock",
+            stochastic=args.mock_stochastic,
+        )
     raise SystemExit(f"unknown provider '{kind}'")
 
 
-def _progress(done: int, total: int) -> None:
-    sys.stderr.write(f"\r  {done}/{total} cases")
+def _progress(done: int, total: int, unit: str = "cases") -> None:
+    sys.stderr.write(f"\r  {done}/{total} {unit}")
     if done == total:
         sys.stderr.write("\n")
     sys.stderr.flush()
@@ -63,7 +69,10 @@ def cmd_run(args) -> int:
     metrics: List[str] = [m.strip() for m in args.metrics.split(",") if m.strip()]
     name = args.name or (os.path.splitext(os.path.basename(args.out))[0] if args.out else "run")
 
-    print(f"Running {len(examples)} cases against {provider.name}:{provider.model}", file=sys.stderr)
+    if args.samples < 1:
+        raise SystemExit("--samples must be at least 1")
+    sampled = f" x {args.samples} samples" if args.samples > 1 else ""
+    print(f"Running {len(examples)} cases{sampled} against {provider.name}:{provider.model}", file=sys.stderr)
     run = run_eval(
         examples,
         provider,
@@ -75,7 +84,9 @@ def cmd_run(args) -> int:
         pricing=Pricing(args.input_price, args.output_price),
         threshold=args.threshold,
         concurrency=args.concurrency,
-        progress=_progress,
+        progress=(lambda d, t: _progress(d, t, "samples")) if args.samples > 1 else _progress,
+        samples=args.samples,
+        pass_policy=args.pass_policy,
     )
 
     comparison = None
@@ -138,6 +149,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--threshold", type=float, default=0.5, help="per-metric pass threshold (0-1)")
     run.add_argument("--concurrency", type=int, default=4)
     run.add_argument("--limit", type=int, help="only run the first N examples")
+    run.add_argument("--samples", type=int, default=1,
+                     help="run each case N times to measure answer variance (use --temperature > 0)")
+    run.add_argument("--pass-policy", choices=PASS_POLICIES, default="majority",
+                     help="with --samples > 1, a case passes when more than half (majority), every (all) "
+                          "or at least one (any) of its samples pass")
     run.add_argument("--input-price", type=float, default=0.0, help="USD per 1M input tokens")
     run.add_argument("--output-price", type=float, default=0.0, help="USD per 1M output tokens")
     run.add_argument("--name", help="run name (defaults to the --out file stem)")
@@ -148,6 +164,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--fail-on-regression", action="store_true")
     run.add_argument("--min-pass-rate", type=float, help="exit 1 if pass rate is below this")
     run.add_argument("--mock-accuracy", type=float, default=0.8)
+    run.add_argument("--mock-stochastic", action="store_true",
+                     help="let repeated samples of a prompt get different mock answers")
     run.add_argument("--seed", type=int, default=0)
     run.set_defaults(func=cmd_run)
 

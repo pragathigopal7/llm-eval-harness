@@ -15,6 +15,7 @@ dataset (JSONL) ──► provider (Anthropic / OpenAI-compatible / mock) ──
 - **LLM-as-judge:** a second model grades answers 1–5 against a rubric and a reference; output is parsed robustly, and unparseable verdicts count as errors, not passes
 - **Per-example metrics:** each test case can choose its own scorers, so factual, math, format and open-ended cases live in one dataset
 - **Statistics that hold up on small sets:** pass rate with a 95% Wilson confidence interval, plus a per-category breakdown
+- **Answer variance:** run each case several times to get pass@1, pass@k, pass^k, output agreement and a list of flaky cases, with a choice of how a sampled case passes
 - **Ops metrics:** mean/p50/p95 latency, token counts, and cost from your per-million-token prices
 - **Regression detection:** compares against a saved baseline, lists newly failing and newly passing cases, and exits non-zero for CI
 - **Providers:** Anthropic Messages API, any OpenAI-compatible server (OpenAI, vLLM, Ollama, LM Studio), and a deterministic mock for offline runs
@@ -68,6 +69,32 @@ One JSON object per line:
 | `metadata` | no | `category` for breakdowns, `pattern` for `regex_match`, `rubric` for a per-case judge rubric |
 
 A case **passes** when it was scored without errors and every metric reaches `--threshold` (default 0.5). Judge scores of 1–5 are mapped to 0–1, so the default threshold means a judge score of 3 or higher.
+
+## Measuring answer variance
+
+A single run at non-zero temperature tells you how a model did once. Sampling each case several times tells you how much to trust that.
+
+```bash
+python -m evalharness run --dataset data/sample.jsonl \
+  --provider anthropic --model claude-haiku-4-5 --temperature 0.7 \
+  --samples 5 --pass-policy majority --out runs/sampled.json
+
+# Offline: the stochastic mock lets repeated samples disagree, repeatably
+python -m evalharness run --dataset data/sample.jsonl --provider mock \
+  --mock-accuracy 0.75 --mock-stochastic --samples 5
+```
+
+The report gains a **Consistency** section:
+
+| Stat | Meaning |
+|---|---|
+| pass@1 | Mean per-sample pass rate: what to expect from a single call |
+| pass@k | Share of cases that passed at least once in k samples |
+| pass^k | Share of cases that passed every sample; the reliability bar for production |
+| Output agreement | Share of a case's samples that match its most common answer (case and whitespace ignored) |
+| Flaky cases | Cases that passed some samples and failed others, with their pass counts |
+
+`--pass-policy` decides whether a sampled case counts as passed in the pass rate, the regression gate and `--min-pass-rate`: `majority` (more than half its samples, the default), `all` (every sample, strictest for CI) or `any` (at least one). Per-metric scores are averaged across samples, tokens and cost are totals, and every sample's output is kept in the run JSON. A sample that hits a provider error counts as a failed sample; the case itself is only marked as an error if every sample failed.
 
 ## Catching regressions
 
@@ -132,7 +159,6 @@ python -m unittest discover -s tests -v
 ## Roadmap
 
 - Pairwise (A/B) judging with position swapping to reduce judge bias
-- Repeated sampling per case to measure answer variance
 - Judge calibration against a small human-labeled set
 - HTML dashboard of run history
 

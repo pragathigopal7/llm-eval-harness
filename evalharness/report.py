@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Dict, List, Optional
 
 from .models import RunResult
@@ -32,6 +32,48 @@ def wilson_interval(passes: int, n: int, z: float = 1.96) -> tuple:
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
+def _normalize_output(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def summarize_sampling(run: RunResult) -> Optional[Dict]:
+    """Consistency stats for a run with repeated samples; None otherwise.
+
+    - ``pass_at_1``: mean per-sample pass rate (the expected single-shot score)
+    - ``pass_at_k``: share of cases that passed at least once in k samples
+    - ``pass_all_k``: share of cases that passed every sample (pass^k)
+    - ``output_agreement``: mean share of a case's samples that match its most
+      common answer (whitespace and case ignored); 1.0 means fully deterministic
+    - ``flaky``: cases that passed some samples and failed others
+    """
+    sampled = [c for c in run.cases if c.sample_passes]
+    if not sampled:
+        return None
+    n = len(sampled)
+    agreement = []
+    for c in sampled:
+        outputs = [_normalize_output(o) for o in (c.sample_outputs or [])]
+        if outputs:
+            agreement.append(Counter(outputs).most_common(1)[0][1] / len(outputs))
+    flaky = sorted(
+        (c for c in sampled if 0 < sum(c.sample_passes) < len(c.sample_passes)),
+        key=lambda c: (c.pass_fraction, c.example_id),
+    )
+    return {
+        "samples": max(len(c.sample_passes) for c in sampled),
+        "pass_policy": run.config.get("pass_policy", "majority"),
+        "pass_at_1": sum(c.pass_fraction for c in sampled) / n,
+        "pass_at_k": sum(any(c.sample_passes) for c in sampled) / n,
+        "pass_all_k": sum(all(c.sample_passes) for c in sampled) / n,
+        "output_agreement": sum(agreement) / len(agreement) if agreement else 0.0,
+        "sample_errors": sum(c.sample_errors for c in sampled),
+        "flaky": [
+            {"id": c.example_id, "passed": sum(c.sample_passes), "samples": len(c.sample_passes)}
+            for c in flaky
+        ],
+    }
+
+
 def summarize(run: RunResult) -> Dict:
     cases = run.cases
     n = len(cases)
@@ -54,7 +96,7 @@ def summarize(run: RunResult) -> Dict:
         }
 
     low, high = wilson_interval(passes, n)
-    return {
+    summary = {
         "name": run.name,
         "model": run.model,
         "timestamp": run.timestamp,
@@ -76,6 +118,10 @@ def summarize(run: RunResult) -> Dict:
         },
         "cost_usd": sum(c.cost_usd for c in cases),
     }
+    sampling = summarize_sampling(run)
+    if sampling is not None:
+        summary["sampling"] = sampling
+    return summary
 
 
 def compare_runs(baseline: RunResult, candidate: RunResult, max_drop: float = 0.0) -> Dict:
@@ -146,6 +192,29 @@ def render_markdown(run: RunResult, comparison: Optional[Dict] = None, max_failu
     lines += ["", "## By category", "", "| Category | N | Pass rate |", "|---|---|---|"]
     lines += [f"| {k} | {v['n']} | {_pct(v['pass_rate'])} |" for k, v in s["by_category"].items()]
 
+    sampling = s.get("sampling")
+    if sampling:
+        k = sampling["samples"]
+        flaky = sampling["flaky"]
+        lines += [
+            "",
+            f"## Consistency ({k} samples per case, pass policy: {sampling['pass_policy']})",
+            "",
+            f"- **pass@1** (mean per-sample pass rate): {_pct(sampling['pass_at_1'])}",
+            f"- **pass@{k}** (passed at least once): {_pct(sampling['pass_at_k'])}",
+            f"- **pass^{k}** (passed every sample): {_pct(sampling['pass_all_k'])}",
+            f"- **Output agreement:** {_pct(sampling['output_agreement'])} of samples match "
+            "their case's most common answer",
+        ]
+        if sampling["sample_errors"]:
+            lines.append(f"- **Samples with errors:** {sampling['sample_errors']}")
+        if flaky:
+            shown = ", ".join(f"`{f['id']}` ({f['passed']}/{f['samples']})" for f in flaky[:max_failures])
+            more = f", and {len(flaky) - max_failures} more" if len(flaky) > max_failures else ""
+            lines.append(f"- **Flaky cases ({len(flaky)}):** {shown}{more}")
+        else:
+            lines.append("- **Flaky cases:** none")
+
     if comparison:
         c = comparison
         verdict = "REGRESSION" if c["regressed"] else "OK"
@@ -170,6 +239,8 @@ def render_markdown(run: RunResult, comparison: Optional[Dict] = None, max_failu
         for case in failures[:max_failures]:
             output = case.output.replace("\n", " ")[:200]
             detail = case.error or ", ".join(f"{k}={v:.2f}" for k, v in case.scores.items())
+            if case.sample_passes and not case.error:
+                detail += f" (passed {sum(case.sample_passes)}/{len(case.sample_passes)} samples)"
             lines.append(f"- `{case.example_id}`: {detail}. Output: \"{output}\"")
             if case.judge_reasoning:
                 lines.append(f"  - Judge: {case.judge_reasoning[:200]}")
