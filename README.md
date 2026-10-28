@@ -2,12 +2,37 @@
 
 A small, **dependency-free** Python harness for evaluating LLM systems. It runs a model over a test set, scores every answer, tracks latency, tokens and cost, and fails CI when a prompt or model change makes things worse.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    D[("Dataset<br/>JSONL test cases")] -->|load_jsonl| R
+
+    subgraph R["Runner · runner.py"]
+        direction TB
+        P["Prompt template<br/>+ system prompt"] --> PR
+        PR["Provider · providers.py<br/>Anthropic · OpenAI-compatible · Mock<br/><i>concurrent, retries on 429/5xx</i>"]
+    end
+
+    PR -->|Completion<br/>text, tokens, latency| S
+
+    subgraph S["Scoring"]
+        direction TB
+        M["Reference metrics · metrics.py<br/>exact_match · contains · token_f1<br/>numeric_match · regex_match · json_valid"]
+        J["LLM-as-judge · judge.py<br/>1–5 rubric score → 0–1"]
+    end
+
+    S -->|CaseResult per id| RP["Report · report.py<br/>pass rate + Wilson 95% CI<br/>per-category · latency p50/p95 · cost"]
+    RP --> O1[["run.json"]]
+    RP --> O2[["report.md"]]
+
+    B[("Baseline run.json")] -.-> C
+    O1 --> C{"compare_runs<br/>regression gate"}
+    C -->|pass-rate drop > max-drop| F["exit 1 → CI fails"]
+    C -->|within tolerance| OK["exit 0"]
 ```
-dataset (JSONL) ──► provider (Anthropic / OpenAI-compatible / mock) ──► scorers ──► run.json + report.md
-                                                                          │            │
-                                     exact_match, token_f1, numeric,  ◄───┘            └──► compare vs baseline
-                                     regex, json_valid, LLM-as-judge                         (regression gate)
-```
+
+Each case flows through the runner to a provider, is scored by the metrics it requests (deterministic scorers, the LLM judge, or both), and lands in a saved run. Comparing that run against a baseline turns the harness into a CI regression gate.
 
 ## Features
 
